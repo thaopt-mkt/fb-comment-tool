@@ -9,8 +9,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
 
-# ===== PHANH AN TOAN =====
-# Doi thanh False roi Commit de TAT tu dong dang ngay lap tuc.
 BAT_TU_DONG_DANG = True
 
 
@@ -33,4 +31,4 @@ def verify_webhook(request: Request):
 @app.post("/webhook")
 async def receive_event(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
-    print("==> CO SU KIEN MOI TU
+    print("CO SU KIEN
