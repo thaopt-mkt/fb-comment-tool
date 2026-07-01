@@ -222,6 +222,7 @@ async def api_add_page(request: Request, auth: bool = Depends(check_auth)):
         print("Ket qua dang ky Webhook:", sub_res, flush=True)
     except Exception as e:
         print("Loi dang ky Webhook cho Page:", e, flush=True)
+        
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
