@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 
@@ -8,6 +9,7 @@ VERIFY_TOKEN = "apero-comment-tool-2026"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
+PIXART_PAGE_TOKEN = os.environ.get("PIXART_PAGE_TOKEN", "")
 
 BAT_TU_DONG_DANG = True
 
@@ -54,6 +56,69 @@ def test_post(request: Request):
     cau_tra_loi = soan_cau_tra_loi(comment_text)
     kq = dang_tra_loi(comment_id, cau_tra_loi)
     return {"comment_id": comment_id, "ai_reply": cau_tra_loi, "ket_qua": kq}
+
+
+@app.get("/reply-batch")
+def reply_batch(request: Request):
+    post_id = request.query_params.get("post_id", "")
+    limit = request.query_params.get("limit", "10")
+    token = PIXART_PAGE_TOKEN
+    if not post_id:
+        return {"error": "Thieu post_id. Them ?post_id=... vao link."}
+    if not token:
+        return {"error": "Chua co PIXART_PAGE_TOKEN tren Render."}
+    try:
+        me = requests.get(
+            "https://graph.facebook.com/v25.0/me",
+            params={"fields": "id", "access_token": token}, timeout=30
+        ).json()
+        page_id = me.get("id")
+    except Exception as e:
+        return {"error": "Khong lay duoc page id: " + str(e)}
+    url = "https://graph.facebook.com/v25.0/" + post_id + "/comments"
+    params = {
+        "fields": "id,message,from,comments{from}",
+        "limit": limit,
+        "access_token": token,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30).json()
+    except Exception as e:
+        return {"error": "Khong lay duoc comment: " + str(e)}
+    if "error" in r:
+        return {"error_lay_comment": r["error"]}
+    comments = r.get("data", [])
+    ket_qua = []
+    for c in comments:
+        cid = c.get("id")
+        ctext = c.get("message", "")
+        if not ctext:
+            ket_qua.append({"comment_id": cid, "status": "bo qua (khong co chu)"})
+            continue
+        if c.get("from", {}).get("id") == page_id:
+            ket_qua.append({"comment_id": cid, "status": "bo qua (comment cua Page)"})
+            continue
+        replies = c.get("comments", {}).get("data", [])
+        da_tra_loi = False
+        for rep in replies:
+            if rep.get("from", {}).get("id") == page_id:
+                da_tra_loi = True
+                break
+        if da_tra_loi:
+            ket_qua.append({"comment_id": cid, "status": "bo qua (da tra loi truoc do)"})
+            continue
+        cau_tra_loi = soan_cau_tra_loi(ctext)
+        kq = dang_tra_loi_voi_token(cid, cau_tra_loi, token)
+        ket_qua.append({
+            "comment_id": cid,
+            "comment": ctext,
+            "reply": cau_tra_loi,
+            "status": "da dang" if "id" in kq else "loi",
+            "chi_tiet": kq,
+        })
+        time.sleep(3)
+    da_dang = sum(1 for x in ket_qua if x.get("status") == "da dang")
+    return {"post_id": post_id, "tong_xu_ly": len(ket_qua), "da_dang": da_dang, "chi_tiet": ket_qua}
 
 
 def xu_ly_su_kien(data):
@@ -104,6 +169,22 @@ def soan_cau_tra_loi(comment_text):
     except Exception as e:
         print("LOI goi Gemini: " + str(e), flush=True)
         return "(Khong soan duoc cau tra loi)"
+
+
+def dang_tra_loi_voi_token(comment_id, message, token):
+    url = "https://graph.facebook.com/v25.0/" + comment_id + "/comments"
+    params = {"message": message, "access_token": token}
+    try:
+        r = requests.post(url, params=params, timeout=30)
+        kq = r.json()
+        if "id" in kq:
+            print("DA DANG TRA LOI: " + str(kq["id"]), flush=True)
+        else:
+            print("LOI dang tra loi: " + str(kq), flush=True)
+        return kq
+    except Exception as e:
+        print("LOI dang (exception): " + str(e), flush=True)
+        return {"error": str(e)}
 
 
 def dang_tra_loi(comment_id, message):
