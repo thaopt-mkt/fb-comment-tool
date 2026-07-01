@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apero Comment Tool</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="brand">
+        <i class="fa-solid fa-robot"></i>
+        <span>Apero AI</span>
+      </div>
+      <nav>
+        <a href="#" class="nav-item active" onclick="navigate('dashboard', this)">
+          <i class="fa-solid fa-layer-group"></i> Pages
+        </a>
+        <a href="#" class="nav-item" onclick="navigate('global-logs', this)">
+          <i class="fa-solid fa-chart-line"></i> Toàn hệ thống
+        </a>
+      </nav>
+    </aside>
+    
+    <main class="main-content">
+      <!-- DASHBOARD VIEW -->
+      <section id="view-dashboard" class="view active">
+        <div class="header">
+          <div>
+            <h1>Quản lý Fanpage</h1>
+            <p>Thêm và quản lý các trang Facebook cần tự động trả lời bình luận.</p>
+          </div>
+          <button class="btn btn-primary" onclick="toggleAddPageModal()">
+            <i class="fa-solid fa-plus"></i> Thêm Page
+          </button>
+        </div>
+        
+        <div class="pages-grid" id="pagesList">
+          <!-- Pages will be injected here -->
+          <div class="empty-state">Đang tải dữ liệu...</div>
+        </div>
+      </section>
+
+      <!-- PAGE DETAILS VIEW -->
+      <section id="view-page-details" class="view">
+        <div class="header">
+          <div class="back-nav">
+            <button class="btn btn-icon" onclick="navigate('dashboard', document.querySelector('.nav-item'))">
+              <i class="fa-solid fa-arrow-left"></i>
+            </button>
+            <div>
+              <h1 id="detailPageName">Tên Page</h1>
+              <p id="detailPageId">ID: ...</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab('posts', this)">Bài Viết</div>
+          <div class="tab" onclick="switchTab('logs', this)">Lịch Sử AI Trả Lời</div>
+        </div>
+
+        <div id="tab-posts" class="tab-content active">
+          <div class="posts-grid" id="postsList">
+            <div class="empty-state">Đang tải bài viết...</div>
+          </div>
+        </div>
+
+        <div id="tab-logs" class="tab-content">
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Khách hàng</th>
+                  <th>Bình luận</th>
+                  <th>AI Trả lời</th>
+                  <th>Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody id="pageLogsList">
+                <tr><td colspan="5" class="empty-state">Đang tải lịch sử...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- GLOBAL LOGS VIEW -->
+      <section id="view-global-logs" class="view">
+        <div class="header">
+          <div>
+            <h1>Lịch sử toàn hệ thống</h1>
+            <p>Theo dõi hoạt động trả lời của AI trên tất cả các Page.</p>
+          </div>
+          <button class="btn btn-secondary" onclick="loadGlobalLogs()">
+            <i class="fa-solid fa-rotate-right"></i> Làm mới
+          </button>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Page ID</th>
+                <th>Thời gian</th>
+                <th>Khách hàng</th>
+                <th>Bình luận</th>
+                <th>AI Trả lời</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="globalLogsList">
+              <tr><td colspan="6" class="empty-state">Đang tải lịch sử...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- MODAL ADD PAGE -->
+  <div class="modal-overlay" id="addPageModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Thêm Fanpage mới</h2>
+        <button class="btn-close" onclick="toggleAddPageModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Người quản lý (Tên bạn)</label>
+          <input type="text" id="ownerInput" placeholder="Ví dụ: Thảo">
+        </div>
+        <div class="form-group">
+          <label>Page Access Token</label>
+          <textarea id="tokenInput" placeholder="Dán token bắt đầu bằng EAA..."></textarea>
+          <span class="hint">Hệ thống sẽ tự động tìm Page ID và tên Page từ Token này.</span>
+        </div>
+        <div id="addMsg" class="alert hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="toggleAddPageModal()">Hủy</button>
+        <button class="btn btn-primary" id="savePageBtn" onclick="addPage()">Lưu Page</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
