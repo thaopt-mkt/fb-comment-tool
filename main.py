@@ -121,13 +121,13 @@ def reply_batch(request: Request):
         return {"error": "Chua co PIXART_PAGE_TOKEN tren Render."}
     try:
         me = requests.get(
-            "https://graph.facebook.com/v25.0/me",
+            "https://graph.facebook.com/v20.0/me",
             params={"fields": "id", "access_token": token}, timeout=30
         ).json()
         page_id = me.get("id")
     except Exception as e:
         return {"error": "Khong lay duoc page id: " + str(e)}
-    url = "https://graph.facebook.com/v25.0/" + post_id + "/comments"
+    url = "https://graph.facebook.com/v20.0/" + post_id + "/comments"
     params = {
         "fields": "id,message,from,comments{from}",
         "limit": limit,
@@ -201,7 +201,7 @@ async def api_add_page(request: Request, auth: bool = Depends(check_auth)):
         return {"error": "Chua nhap ten nguoi quan ly Page."}
     try:
         info = requests.get(
-            "https://graph.facebook.com/v25.0/me",
+            "https://graph.facebook.com/v20.0/me",
             params={"fields": "id,name", "access_token": token}, timeout=20
         ).json()
     except Exception as e:
@@ -260,7 +260,26 @@ def xu_ly_su_kien(data):
             print("AI goi y: " + cau_tra_loi, flush=True)
             gui_discord(ten_khach, comment_text, cau_tra_loi)
             if BAT_TU_DONG_DANG and comment_id:
-                dang_tra_loi(comment_id, cau_tra_loi)
+                token = lay_token_page(page_id)
+                if token:
+                    dang_tra_loi_voi_token(comment_id, cau_tra_loi, token)
+                else:
+                    print(f"Khong tim thay token cho page {page_id}, fallback...", flush=True)
+                    dang_tra_loi(comment_id, cau_tra_loi)
+
+def lay_token_page(page_id):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT token FROM pages WHERE page_id = %s", (page_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return row[0]
+    except Exception as e:
+        print("Loi lay token tu DB:", e, flush=True)
+    return PAGE_ACCESS_TOKEN
 
 
 def soan_cau_tra_loi(comment_text):
@@ -286,7 +305,7 @@ def soan_cau_tra_loi(comment_text):
 
 
 def dang_tra_loi_voi_token(comment_id, message, token):
-    url = "https://graph.facebook.com/v25.0/" + comment_id + "/comments"
+    url = "https://graph.facebook.com/v20.0/" + comment_id + "/comments"
     params = {"message": message, "access_token": token}
     try:
         r = requests.post(url, params=params, timeout=30)
@@ -302,7 +321,7 @@ def dang_tra_loi_voi_token(comment_id, message, token):
 
 
 def dang_tra_loi(comment_id, message):
-    url = "https://graph.facebook.com/v25.0/" + comment_id + "/comments"
+    url = "https://graph.facebook.com/v20.0/" + comment_id + "/comments"
     params = {"message": message, "access_token": PAGE_ACCESS_TOKEN}
     try:
         r = requests.post(url, params=params, timeout=30)
