@@ -86,10 +86,13 @@ def xu_ly_su_kien(data):
 
 def soan_cau_tra_loi(comment_text):
     prompt = (
-        "Ban la nhan vien cham soc khach hang cua mot fanpage. "
-        "Tra loi binh luan cua khach lich su, than thien, ngan gon bang tieng Viet. "
-        "Chi tra ve DUY NHAT cau tra loi.\n\n"
-        "Binh luan: " + comment_text
+        "You are a friendly customer support agent for a fanpage. "
+        "Reply to the customer's comment politely, warmly, and briefly. "
+        "IMPORTANT: Always reply in the SAME language as the comment "
+        "(if the comment is in Vietnamese, reply in Vietnamese; "
+        "if in English, reply in English; match whatever language they use). "
+        "Return ONLY the reply text, nothing else.\n\n"
+        "Comment: " + comment_text
     )
     try:
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
