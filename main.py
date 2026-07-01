@@ -6,8 +6,10 @@ import psycopg2
 from fastapi import FastAPI, Request, Response, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 VERIFY_TOKEN = "apero-comment-tool-2026"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -48,9 +50,17 @@ def init_db():
         "id SERIAL PRIMARY KEY, name TEXT, page_id TEXT, "
         "token TEXT, owner TEXT, created_at TIMESTAMP DEFAULT NOW())"
     )
+    cur.execute("DROP TABLE IF EXISTS reply_log")
     cur.execute(
-        "CREATE TABLE IF NOT EXISTS reply_log ("
-        "comment_id TEXT PRIMARY KEY, replied_at TIMESTAMP DEFAULT NOW())"
+        "CREATE TABLE reply_log ("
+        "comment_id TEXT PRIMARY KEY, "
+        "page_id TEXT, "
+        "post_id TEXT, "
+        "customer_name TEXT, "
+        "comment_text TEXT, "
+        "ai_reply_text TEXT, "
+        "status TEXT, "
+        "replied_at TIMESTAMP DEFAULT NOW())"
     )
     conn.commit()
     cur.close()
@@ -175,7 +185,8 @@ def reply_batch(request: Request):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(auth: bool = Depends(check_auth)):
-    return DASHBOARD_HTML
+    with open("static/index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
 
 
 @app.get("/api/pages")
@@ -247,6 +258,49 @@ async def api_delete_page(request: Request, auth: bool = Depends(check_auth)):
     conn.close()
     return {"ok": True}
 
+@app.get("/api/pages/{page_id}/posts")
+def api_get_page_posts(page_id: str, auth: bool = Depends(check_auth)):
+    token = lay_token_page(page_id)
+    if not token or token == PAGE_ACCESS_TOKEN:
+        return {"error": "Khong tim thay token rieng cho page nay, vui long them page vao he thong lai."}
+    url = f"https://graph.facebook.com/v20.0/{page_id}/posts"
+    params = {"fields": "id,message,created_time,full_picture,comments.summary(total_count)", "limit": 20, "access_token": token}
+    try:
+        r = requests.get(url, params=params, timeout=30).json()
+        if "error" in r:
+            return {"error": r["error"].get("message", "Loi Facebook API")}
+        return {"posts": r.get("data", [])}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/pages/{page_id}/logs")
+def api_get_page_logs(page_id: str, auth: bool = Depends(check_auth)):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT comment_id, post_id, customer_name, comment_text, ai_reply_text, status, replied_at FROM reply_log WHERE page_id = %s ORDER BY replied_at DESC LIMIT 50", (page_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        logs = [{"comment_id": r[0], "post_id": r[1], "customer_name": r[2], "comment_text": r[3], "ai_reply_text": r[4], "status": r[5], "replied_at": str(r[6])} for r in rows]
+        return {"logs": logs}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/logs")
+def api_get_all_logs(auth: bool = Depends(check_auth)):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT comment_id, page_id, post_id, customer_name, comment_text, ai_reply_text, status, replied_at FROM reply_log ORDER BY replied_at DESC LIMIT 100")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        logs = [{"comment_id": r[0], "page_id": r[1], "post_id": r[2], "customer_name": r[3], "comment_text": r[4], "ai_reply_text": r[5], "status": r[6], "replied_at": str(r[7])} for r in rows]
+        return {"logs": logs}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 def xu_ly_su_kien(data):
     if data.get("object") != "page":
@@ -274,11 +328,34 @@ def xu_ly_su_kien(data):
             gui_discord(ten_khach, comment_text, cau_tra_loi)
             if BAT_TU_DONG_DANG and comment_id:
                 token = lay_token_page(page_id)
+                status_text = "Thất bại"
                 if token:
-                    dang_tra_loi_voi_token(comment_id, cau_tra_loi, token)
+                    kq = dang_tra_loi_voi_token(comment_id, cau_tra_loi, token)
+                    if kq and "id" in kq:
+                        status_text = "Thành công"
                 else:
                     print(f"Khong tim thay token cho page {page_id}, fallback...", flush=True)
-                    dang_tra_loi(comment_id, cau_tra_loi)
+                    kq = dang_tra_loi(comment_id, cau_tra_loi)
+                    if kq and "id" in kq:
+                        status_text = "Thành công (fallback)"
+                
+                post_id = value.get("post_id", "")
+                ghi_log_reply(comment_id, page_id, post_id, ten_khach, comment_text, cau_tra_loi, status_text)
+
+def ghi_log_reply(comment_id, page_id, post_id, customer_name, comment_text, ai_reply_text, status):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO reply_log (comment_id, page_id, post_id, customer_name, comment_text, ai_reply_text, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (comment_id, page_id, post_id, customer_name, comment_text, ai_reply_text, status)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("Loi ghi log DB:", e, flush=True)
 
 def lay_token_page(page_id):
     try:
@@ -359,174 +436,3 @@ def gui_discord(ten_khach, comment_text, cau_tra_loi):
         print("LOI gui Discord: " + str(e), flush=True)
 
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bang dieu khien tra loi comment</title>
-<style>
-  :root {
-    --bg: #f5f6f8;
-    --card: #ffffff;
-    --ink: #1a2230;
-    --muted: #6b7688;
-    --line: #e5e8ee;
-    --brand: #2f6f6a;
-    --brand-soft: #e7f1f0;
-    --danger: #b23c3c;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    line-height: 1.5;
-  }
-  header {
-    background: var(--card); border-bottom: 1px solid var(--line);
-    padding: 20px 24px;
-  }
-  header h1 { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; }
-  .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; padding: 20px; margin-bottom: 20px;
-  }
-  .card h2 { margin: 0 0 4px; font-size: 15px; }
-  .card .hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
-  label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
-  input, textarea {
-    width: 100%; padding: 10px 12px; border: 1px solid var(--line);
-    border-radius: 8px; font-size: 14px; font-family: inherit; background: #fbfcfd;
-  }
-  textarea { min-height: 70px; resize: vertical; }
-  input:focus, textarea:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
-  button {
-    margin-top: 14px; background: var(--brand); color: #fff; border: none;
-    padding: 10px 18px; border-radius: 8px; font-size: 14px; font-weight: 600;
-    cursor: pointer;
-  }
-  button:hover { filter: brightness(1.05); }
-  button:disabled { opacity: 0.6; cursor: default; }
-  .msg { margin-top: 12px; font-size: 13px; padding: 10px 12px; border-radius: 8px; display: none; }
-  .msg.ok { background: var(--brand-soft); color: var(--brand); display: block; }
-  .msg.err { background: #fbe9e9; color: var(--danger); display: block; }
-  table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-  th, td { text-align: left; padding: 10px 8px; font-size: 14px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
-  .owner-pill {
-    display: inline-block; background: var(--brand-soft); color: var(--brand);
-    padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
-  }
-  .del { background: none; color: var(--danger); margin: 0; padding: 4px 8px; font-size: 13px; }
-  .empty { color: var(--muted); font-size: 14px; padding: 16px 0; }
-  code { background: #eef0f4; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Bang dieu khien tra loi comment</h1>
-  <p>Quan ly cac Page va token de tra loi binh luan tu dong.</p>
-</header>
-<main>
-  <div class="card">
-    <h2>Them Page</h2>
-    <p class="hint">Dan Page Access Token va ten nguoi quan ly. He thong tu lay ten Page tu Facebook.</p>
-    <label>Nguoi quan ly (ten ban)</label>
-    <input id="owner" placeholder="Vi du: Thao">
-    <label>Page Access Token</label>
-    <textarea id="token" placeholder="Dan token bat dau bang EAA..."></textarea>
-    <button id="addBtn" onclick="addPage()">Them Page</button>
-    <div id="addMsg" class="msg"></div>
-  </div>
-
-  <div class="card">
-    <h2>Danh sach Page</h2>
-    <p class="hint">Cac Page dang duoc quan ly boi tool.</p>
-    <div id="list"><div class="empty">Dang tai...</div></div>
-  </div>
-</main>
-
-<script>
-async function loadPages() {
-  const box = document.getElementById('list');
-  try {
-    const res = await fetch('/api/pages');
-    const data = await res.json();
-    const pages = data.pages || [];
-    if (pages.length === 0) {
-      box.innerHTML = '<div class="empty">Chua co Page nao. Them Page o tren.</div>';
-      return;
-    }
-    let html = '<table><tr><th>Ten Page</th><th>Nguoi quan ly</th><th>Page ID</th><th></th></tr>';
-    for (const p of pages) {
-      html += '<tr>' +
-        '<td>' + escapeHtml(p.name) + '</td>' +
-        '<td><span class="owner-pill">' + escapeHtml(p.owner || '-') + '</span></td>' +
-        '<td><code>' + escapeHtml(p.page_id || '-') + '</code></td>' +
-        '<td><button class="del" onclick="delPage(' + p.id + ')">Xoa</button></td>' +
-        '</tr>';
-    }
-    html += '</table>';
-    box.innerHTML = html;
-  } catch (e) {
-    box.innerHTML = '<div class="empty">Loi tai danh sach: ' + e + '</div>';
-  }
-}
-
-async function addPage() {
-  const btn = document.getElementById('addBtn');
-  const msg = document.getElementById('addMsg');
-  const owner = document.getElementById('owner').value.trim();
-  const token = document.getElementById('token').value.trim();
-  msg.className = 'msg';
-  msg.style.display = 'none';
-  btn.disabled = true;
-  btn.textContent = 'Dang them...';
-  try {
-    const res = await fetch('/api/pages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner: owner, token: token })
-    });
-    const data = await res.json();
-    if (data.error) {
-      msg.className = 'msg err';
-      msg.textContent = data.error;
-    } else {
-      msg.className = 'msg ok';
-      msg.textContent = 'Da them Page: ' + data.name;
-      document.getElementById('token').value = '';
-      loadPages();
-    }
-  } catch (e) {
-    msg.className = 'msg err';
-    msg.textContent = 'Loi: ' + e;
-  }
-  btn.disabled = false;
-  btn.textContent = 'Them Page';
-}
-
-async function delPage(id) {
-  if (!confirm('Xoa Page nay khoi tool?')) return;
-  await fetch('/api/pages/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: id })
-  });
-  loadPages();
-}
-
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, function(c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-  });
-}
-
-loadPages();
-</script>
-</body>
-</html>
-"""
