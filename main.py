@@ -210,6 +210,18 @@ async def api_add_page(request: Request, auth: bool = Depends(check_auth)):
         return {"error": "Token khong dung: " + str(info["error"].get("message", ""))}
     page_id = info.get("id", "")
     name = info.get("name", "(khong ro ten)")
+    
+    # Tu dong dang ky Webhook cho Page nay
+    try:
+        sub_url = f"https://graph.facebook.com/v20.0/{page_id}/subscribed_apps"
+        sub_res = requests.post(
+            sub_url,
+            params={"subscribed_fields": "feed", "access_token": token},
+            timeout=20
+        ).json()
+        print("Ket qua dang ky Webhook:", sub_res, flush=True)
+    except Exception as e:
+        print("Loi dang ky Webhook cho Page:", e, flush=True)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
