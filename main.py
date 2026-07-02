@@ -50,9 +50,8 @@ def init_db():
         "id SERIAL PRIMARY KEY, name TEXT, page_id TEXT, "
         "token TEXT, owner TEXT, created_at TIMESTAMP DEFAULT NOW())"
     )
-    cur.execute("DROP TABLE IF EXISTS reply_log")
     cur.execute(
-        "CREATE TABLE reply_log ("
+        "CREATE TABLE IF NOT EXISTS reply_log ("
         "comment_id TEXT PRIMARY KEY, "
         "page_id TEXT, "
         "post_id TEXT, "
@@ -300,6 +299,101 @@ def api_get_all_logs(auth: bool = Depends(check_auth)):
         return {"logs": logs}
     except Exception as e:
         return {"error": str(e)}
+
+
+def da_tra_loi_chua(comment_id):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM reply_log WHERE comment_id = %s", (comment_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        print("Loi kiem tra reply_log:", e, flush=True)
+        return False
+
+
+def quet_mot_page(name, page_id, token, so_bai, so_cmt, gioi_han_tra_loi):
+    ket_qua = {"page": name, "da_tra_loi": 0, "bo_qua": 0, "loi": 0}
+    # 1. Lay cac bai gan day
+    try:
+        r = requests.get(
+            "https://graph.facebook.com/v25.0/" + str(page_id) + "/feed",
+            params={"fields": "id", "limit": str(so_bai), "access_token": token},
+            timeout=30,
+        ).json()
+    except Exception as e:
+        print("Loi lay bai cua page " + str(name) + ": " + str(e), flush=True)
+        ket_qua["loi"] += 1
+        return ket_qua
+    if "error" in r:
+        print("Loi lay bai page " + str(name) + ": " + str(r["error"]), flush=True)
+        ket_qua["loi"] += 1
+        return ket_qua
+    posts = r.get("data", [])
+    # 2. Voi moi bai, lay comment
+    for post in posts:
+        post_id = post.get("id")
+        try:
+            rc = requests.get(
+                "https://graph.facebook.com/v25.0/" + str(post_id) + "/comments",
+                params={"fields": "id,message,from", "limit": str(so_cmt), "access_token": token},
+                timeout=30,
+            ).json()
+        except Exception:
+            continue
+        comments = rc.get("data", [])
+        for c in comments:
+            if ket_qua["da_tra_loi"] >= gioi_han_tra_loi:
+                return ket_qua
+            cid = c.get("id")
+            ctext = c.get("message", "")
+            ten_khach = c.get("from", {}).get("name", "Khach")
+            from_id = c.get("from", {}).get("id")
+            if not ctext:
+                ket_qua["bo_qua"] += 1
+                continue
+            if from_id == str(page_id):
+                ket_qua["bo_qua"] += 1
+                continue
+            if da_tra_loi_chua(cid):
+                ket_qua["bo_qua"] += 1
+                continue
+            cau = soan_cau_tra_loi(ctext)
+            kq = dang_tra_loi_voi_token(cid, cau, token)
+            if "id" in kq:
+                ghi_log_reply(cid, str(page_id), str(post_id), ten_khach, ctext, cau, "da_dang")
+                ket_qua["da_tra_loi"] += 1
+            else:
+                ghi_log_reply(cid, str(page_id), str(post_id), ten_khach, ctext, cau, "loi")
+                ket_qua["loi"] += 1
+            time.sleep(2)
+    return ket_qua
+
+
+@app.get("/scan-and-reply")
+def scan_and_reply(request: Request):
+    key = request.query_params.get("key", "")
+    if not secrets.compare_digest(key, DASHBOARD_PASSWORD):
+        return {"error": "Sai key"}
+    so_bai = int(request.query_params.get("posts", "15"))
+    so_cmt = int(request.query_params.get("comments", "50"))
+    gioi_han = int(request.query_params.get("max", "40"))
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT name, page_id, token FROM pages")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    tong = []
+    for name, page_id, token in rows:
+        kq = quet_mot_page(name, page_id, token, so_bai, so_cmt, gioi_han)
+        tong.append(kq)
+        print("QUET XONG PAGE: " + str(kq), flush=True)
+    tong_tra_loi = sum(x["da_tra_loi"] for x in tong)
+    return {"tong_tra_loi": tong_tra_loi, "chi_tiet": tong}
 
 
 def xu_ly_su_kien(data):
