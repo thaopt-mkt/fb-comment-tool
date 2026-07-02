@@ -315,27 +315,33 @@ def da_tra_loi_chua(comment_id):
         return False
 
 
+def lay_danh_sach_bai(page_id, token, so_bai):
+    post_ids = []
+    for edge in ["feed", "ads_posts", "promotable_posts"]:
+        try:
+            params = {"fields": "id", "limit": str(so_bai), "access_token": token}
+            r = requests.get(
+                "https://graph.facebook.com/v25.0/" + str(page_id) + "/" + edge,
+                params=params, timeout=30,
+            ).json()
+            if "error" in r:
+                print("Bo qua " + edge + ": " + str(r["error"].get("message", "")), flush=True)
+                continue
+            for p in r.get("data", []):
+                pid = p.get("id")
+                if pid and pid not in post_ids:
+                    post_ids.append(pid)
+        except Exception as e:
+            print("Loi lay " + edge + ": " + str(e), flush=True)
+    return post_ids
+
+
 def quet_mot_page(name, page_id, token, so_bai, so_cmt, gioi_han_tra_loi):
-    ket_qua = {"page": name, "da_tra_loi": 0, "bo_qua": 0, "loi": 0}
-    # 1. Lay cac bai gan day
-    try:
-        r = requests.get(
-            "https://graph.facebook.com/v25.0/" + str(page_id) + "/feed",
-            params={"fields": "id", "limit": str(so_bai), "access_token": token},
-            timeout=30,
-        ).json()
-    except Exception as e:
-        print("Loi lay bai cua page " + str(name) + ": " + str(e), flush=True)
-        ket_qua["loi"] += 1
-        return ket_qua
-    if "error" in r:
-        print("Loi lay bai page " + str(name) + ": " + str(r["error"]), flush=True)
-        ket_qua["loi"] += 1
-        return ket_qua
-    posts = r.get("data", [])
-    # 2. Voi moi bai, lay comment
-    for post in posts:
-        post_id = post.get("id")
+    ket_qua = {"page": name, "so_bai": 0, "da_tra_loi": 0, "bo_qua": 0, "loi": 0}
+    post_ids = lay_danh_sach_bai(page_id, token, so_bai)
+    ket_qua["so_bai"] = len(post_ids)
+    print("Page " + str(name) + " tim thay " + str(len(post_ids)) + " bai", flush=True)
+    for post_id in post_ids:
         try:
             rc = requests.get(
                 "https://graph.facebook.com/v25.0/" + str(post_id) + "/comments",
