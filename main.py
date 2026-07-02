@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import secrets
 import requests
@@ -60,6 +61,14 @@ def init_db():
         "ai_reply_text TEXT, "
         "status TEXT, "
         "replied_at TIMESTAMP DEFAULT NOW())"
+    )
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS monitored_posts ("
+        "id SERIAL PRIMARY KEY, "
+        "page_db_id INTEGER, "
+        "page_id TEXT, "
+        "post_id TEXT, "
+        "created_at TIMESTAMP DEFAULT NOW())"
     )
     conn.commit()
     cur.close()
@@ -398,8 +407,164 @@ def scan_and_reply(request: Request):
         kq = quet_mot_page(name, page_id, token, so_bai, so_cmt, gioi_han)
         tong.append(kq)
         print("QUET XONG PAGE: " + str(kq), flush=True)
+    # Quet cac bai theo doi (bai quang cao dan tay)
+    kq_theo_doi = quet_cac_bai_theo_doi(so_cmt, gioi_han)
+    tong.append(kq_theo_doi)
+    print("QUET XONG BAI THEO DOI: " + str(kq_theo_doi), flush=True)
     tong_tra_loi = sum(x["da_tra_loi"] for x in tong)
     return {"tong_tra_loi": tong_tra_loi, "chi_tiet": tong}
+
+
+def quet_mot_bai(post_id, page_id, token, so_cmt, gioi_han, ket_qua):
+    try:
+        rc = requests.get(
+            "https://graph.facebook.com/v25.0/" + str(post_id) + "/comments",
+            params={"fields": "id,message,from", "limit": str(so_cmt), "access_token": token},
+            timeout=30,
+        ).json()
+    except Exception:
+        return
+    if "error" in rc:
+        print("Loi lay comment bai " + str(post_id) + ": " + str(rc["error"].get("message", "")), flush=True)
+        return
+    for c in rc.get("data", []):
+        if ket_qua["da_tra_loi"] >= gioi_han:
+            return
+        cid = c.get("id")
+        ctext = c.get("message", "")
+        ten_khach = c.get("from", {}).get("name", "Khach")
+        from_id = c.get("from", {}).get("id")
+        if not ctext:
+            ket_qua["bo_qua"] += 1
+            continue
+        if from_id == str(page_id):
+            ket_qua["bo_qua"] += 1
+            continue
+        if da_tra_loi_chua(cid):
+            ket_qua["bo_qua"] += 1
+            continue
+        cau = soan_cau_tra_loi(ctext)
+        kq = dang_tra_loi_voi_token(cid, cau, token)
+        if "id" in kq:
+            ghi_log_reply(cid, str(page_id), str(post_id), ten_khach, ctext, cau, "da_dang")
+            ket_qua["da_tra_loi"] += 1
+        else:
+            ghi_log_reply(cid, str(page_id), str(post_id), ten_khach, ctext, cau, "loi")
+            ket_qua["loi"] += 1
+        time.sleep(2)
+
+
+def quet_cac_bai_theo_doi(so_cmt, gioi_han):
+    ket_qua = {"loai": "bai_theo_doi", "so_bai": 0, "da_tra_loi": 0, "bo_qua": 0, "loi": 0}
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT m.post_id, m.page_id, p.token FROM monitored_posts m "
+            "JOIN pages p ON m.page_db_id = p.id"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("Loi doc monitored_posts: " + str(e), flush=True)
+        return ket_qua
+    ket_qua["so_bai"] = len(rows)
+    for post_id, page_id, token in rows:
+        quet_mot_bai(post_id, page_id, token, so_cmt, gioi_han, ket_qua)
+    return ket_qua
+
+
+def trich_post_id(link, page_id):
+    link = (link or "").strip()
+    if not link:
+        return None
+    m = re.search(r"(\d{5,}_\d{5,})", link)
+    if m:
+        return m.group(1)
+    m = re.search(r"/posts/(\d{5,})", link)
+    if m:
+        return str(page_id) + "_" + m.group(1)
+    m = re.search(r"(?:fbid=|story_fbid=|/videos/|multi_permalinks=)(\d{5,})", link)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d{8,})", link)
+    if m:
+        return m.group(1)
+    return None
+
+
+@app.get("/api/monitored")
+def api_list_monitored(auth: bool = Depends(check_auth)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT m.id, m.post_id, p.name FROM monitored_posts m "
+        "JOIN pages p ON m.page_db_id = p.id ORDER BY m.id DESC"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {"posts": [{"id": r[0], "post_id": r[1], "page_name": r[2]} for r in rows]}
+
+
+@app.post("/api/monitored")
+async def api_add_monitored(request: Request, auth: bool = Depends(check_auth)):
+    body = await request.json()
+    page_db_id = body.get("page_db_id")
+    links = body.get("links", "")
+    if not page_db_id:
+        return {"error": "Chua chon Page"}
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT page_id FROM pages WHERE id = %s", (page_db_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return {"error": "Page khong ton tai"}
+    page_id = row[0]
+    them = 0
+    bo_qua = 0
+    for dong in links.splitlines():
+        pid = trich_post_id(dong, page_id)
+        if not pid:
+            bo_qua += 1
+            continue
+        cur.execute(
+            "SELECT 1 FROM monitored_posts WHERE post_id = %s AND page_db_id = %s",
+            (pid, page_db_id),
+        )
+        if cur.fetchone():
+            bo_qua += 1
+            continue
+        cur.execute(
+            "INSERT INTO monitored_posts (page_db_id, page_id, post_id) VALUES (%s, %s, %s)",
+            (page_db_id, page_id, pid),
+        )
+        them += 1
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True, "them": them, "bo_qua": bo_qua}
+
+
+@app.post("/api/monitored/delete")
+async def api_delete_monitored(request: Request, auth: bool = Depends(check_auth)):
+    body = await request.json()
+    mid = body.get("id")
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM monitored_posts WHERE id = %s", (mid,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/posts", response_class=HTMLResponse)
+def posts_page(auth: bool = Depends(check_auth)):
+    return POSTS_HTML
 
 
 def xu_ly_su_kien(data):
@@ -534,3 +699,125 @@ def gui_discord(ten_khach, comment_text, cau_tra_loi):
         requests.post(DISCORD_WEBHOOK_URL, json={"content": noi_dung}, timeout=15)
     except Exception as e:
         print("LOI gui Discord: " + str(e), flush=True)
+
+
+
+
+POSTS_HTML = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bai viet theo doi</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1a2230; --muted:#6b7688; --line:#e5e8ee; --brand:#2f6f6a; --brand-soft:#e7f1f0; --danger:#b23c3c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; line-height:1.5; }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:20px 24px; }
+  header h1 { margin:0; font-size:19px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:860px; margin:0 auto; padding:24px 20px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:20px; }
+  .card h2 { margin:0 0 4px; font-size:15px; }
+  .hint { margin:0 0 16px; color:var(--muted); font-size:13px; }
+  label { display:block; font-size:13px; font-weight:600; margin:12px 0 6px; }
+  select, textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px; font-family:inherit; background:#fbfcfd; }
+  textarea { min-height:120px; resize:vertical; }
+  button { margin-top:14px; background:var(--brand); color:#fff; border:none; padding:10px 18px; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; }
+  .msg { margin-top:12px; font-size:13px; padding:10px 12px; border-radius:8px; display:none; }
+  .msg.ok { background:var(--brand-soft); color:var(--brand); display:block; }
+  .msg.err { background:#fbe9e9; color:var(--danger); display:block; }
+  table { width:100%; border-collapse:collapse; margin-top:4px; }
+  th, td { text-align:left; padding:10px 8px; font-size:14px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; }
+  code { background:#eef0f4; padding:1px 6px; border-radius:4px; font-size:12px; }
+  .del { background:none; color:var(--danger); margin:0; padding:4px 8px; font-size:13px; }
+  .empty { color:var(--muted); font-size:14px; padding:16px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bai viet theo doi (bai quang cao)</h1>
+  <p>Dan link cac bai quang cao de tool tra loi comment tren do.</p>
+</header>
+<main>
+  <div class="card">
+    <h2>Them bai viet</h2>
+    <p class="hint">Chon Page, roi dan link bai viet (moi link 1 dong, dan nhieu link cung duoc).</p>
+    <label>Page</label>
+    <select id="page"></select>
+    <label>Link bai viet</label>
+    <textarea id="links" placeholder="https://www.facebook.com/.../posts/...&#10;https://www.facebook.com/photo?fbid=..."></textarea>
+    <button id="addBtn" onclick="addPosts()">Them bai</button>
+    <div id="msg" class="msg"></div>
+  </div>
+  <div class="card">
+    <h2>Danh sach bai dang theo doi</h2>
+    <div id="list"><div class="empty">Dang tai...</div></div>
+  </div>
+</main>
+<script>
+async function loadPages() {
+  const sel = document.getElementById('page');
+  const res = await fetch('/api/pages');
+  const data = await res.json();
+  sel.innerHTML = '';
+  for (const p of (data.pages || [])) {
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.name + ' (' + (p.owner || '-') + ')';
+    sel.appendChild(o);
+  }
+}
+async function loadPosts() {
+  const box = document.getElementById('list');
+  const res = await fetch('/api/monitored');
+  const data = await res.json();
+  const posts = data.posts || [];
+  if (posts.length === 0) { box.innerHTML = '<div class="empty">Chua co bai nao.</div>'; return; }
+  let html = '<table><tr><th>Post ID</th><th>Page</th><th></th></tr>';
+  for (const p of posts) {
+    html += '<tr><td><code>' + esc(p.post_id) + '</code></td><td>' + esc(p.page_name) +
+      '</td><td><button class="del" onclick="delPost(' + p.id + ')">Xoa</button></td></tr>';
+  }
+  html += '</table>';
+  box.innerHTML = html;
+}
+async function addPosts() {
+  const btn = document.getElementById('addBtn');
+  const msg = document.getElementById('msg');
+  const page_db_id = document.getElementById('page').value;
+  const links = document.getElementById('links').value;
+  msg.className = 'msg'; btn.disabled = true; btn.textContent = 'Dang them...';
+  try {
+    const res = await fetch('/api/monitored', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_db_id: parseInt(page_db_id), links: links })
+    });
+    const data = await res.json();
+    if (data.error) { msg.className = 'msg err'; msg.textContent = data.error; }
+    else {
+      msg.className = 'msg ok';
+      msg.textContent = 'Da them ' + data.them + ' bai (bo qua ' + data.bo_qua + ').';
+      document.getElementById('links').value = '';
+      loadPosts();
+    }
+  } catch (e) { msg.className = 'msg err'; msg.textContent = 'Loi: ' + e; }
+  btn.disabled = false; btn.textContent = 'Them bai';
+}
+async function delPost(id) {
+  if (!confirm('Xoa bai nay?')) return;
+  await fetch('/api/monitored/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: id })
+  });
+  loadPosts();
+}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+loadPages();
+loadPosts();
+</script>
+</body>
+</html>
+"""
